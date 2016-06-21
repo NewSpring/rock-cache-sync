@@ -1,11 +1,14 @@
-﻿using System.Collections.Generic;
-using System.ComponentModel;
-using System.ComponentModel.Composition;
+﻿using cc.newspring.CacheBreak.Utilities;
 using RestSharp;
 using Rock.Attribute;
 using Rock.Data;
 using Rock.Model;
-using cc.newspring.CacheBreak.Utilities;
+using Rock.Web.UI.Controls;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.ComponentModel.Composition;
+using System.Linq;
 
 namespace cc.newspring.CacheBreak.Workflow.Action
 {
@@ -13,9 +16,9 @@ namespace cc.newspring.CacheBreak.Workflow.Action
     [Export( typeof( Rock.Workflow.ActionComponent ) )]
     [ExportMetadata( "ComponentName", "Cache Break Sync" )]
     [CustomDropdownListField( "Action", "The workflow that this action is under is triggered by what type of event", "Save,Delete", true )]
-    [TextField( "Sync URL", "The specific URL endpoint this related entity type should synchronize with", true, "" )]
-    [TextField( "Token Name", "The key by which the token should be identified in the header of HTTP requests", false, "" )]
-    [TextField( "Token Value", "The value of the token to authenticate with the URL endpoint", false, "" )]
+    [TextField( "Sync URL", "The specific URL endpoint this related entity type should synchronize with", true, "https://" )]
+    [TextField( "Token Name", "The key by which the authentication token should be identified in the header of HTTP requests", false, "Authorization-Token")]
+    [PersonField( "Rest Key Holder", "Define a REST key within \"Admin Tools/Security/REST Keys\" that will be used for the header token value", false )]
     public class CacheBreak : Rock.Workflow.ActionComponent
     {
         public override bool Execute( RockContext rockContext, WorkflowAction action, object entity, out List<string> errorMessages )
@@ -26,30 +29,32 @@ namespace cc.newspring.CacheBreak.Workflow.Action
             var isSave = GetAttributeValue( action, "Action" ) == "Save";
             var url = GetAttributeValue( action, "SyncURL" );
             var tokenName = GetAttributeValue( action, "TokenName" );
-            var tokenValue = GetAttributeValue( action, "TokenValue" );
-            var lastSlash = "/";
+            var aliasGuidString = GetAttributeValue( action, "RestKeyHolder");
 
             if ( string.IsNullOrWhiteSpace( url ) )
             {
                 return true;
             }
 
-            if ( url.EndsWith( lastSlash ) )
+            var request = new RestRequest( Method.POST );
+            var client = new RestClient(url);
+            var data = new Dictionary<string, object>();
+            request.RequestFormat = DataFormat.Json;
+            Guid aliasGuid;
+
+            if (!string.IsNullOrWhiteSpace(tokenName) && !string.IsNullOrWhiteSpace(aliasGuidString) && Guid.TryParse(aliasGuidString, out aliasGuid))
             {
-                lastSlash = string.Empty;
+                var user = new UserLoginService(rockContext).Queryable().FirstOrDefault(u => u.Person.Aliases.Any(a => a.Guid == aliasGuid));
+
+                if(user != null)
+                {
+                    request.AddHeader(tokenName, user.ApiKey);
+                }          
             }
 
-            var request = new RestRequest( Method.POST );
-            request.RequestFormat = DataFormat.Json;
-            request.AddHeader( tokenName, tokenValue );
-
-            var fullUrl = string.Format( "{0}{1}{2}", url, lastSlash, castedEntity.Id );
-            var client = new RestClient( fullUrl );
-            var data = new CacheData();
-
-            data.Entity = castedEntity;
-            data.Id = castedEntity.Id;
-            data.Action = isSave ? "Save" : "Delete";
+            data.Add("type", castedEntity.TypeName);
+            data.Add("id", castedEntity.Id);
+            data.Add("action", isSave ? "save" : "delete");
 
             request.JsonSerializer = new NewtonsoftJsonSerializer( request.JsonSerializer );
             request.AddJsonBody( data );
